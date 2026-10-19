@@ -1,0 +1,41 @@
+# Danfoss Link CC -> Home Assistant, one service.
+#   dlre-helper  vendor Lua MDG peer (grid connection + identity + CC pairing,
+#                HTTP gateway on :20558) AND the Python MQTT bridge (HA discovery,
+#                pause, rooms) in a single container.
+# Build the peer base image first:
+#   docker build -t dlre-run -f work/Dockerfile.runtime work/
+services:
+  dlre-helper:
+    build:
+      context: .
+      dockerfile: Dockerfile.helper
+    image: dlre-helper
+    container_name: dlre-helper
+    restart: unless-stopped
+    volumes:
+      # Durable peer identity + CC pairing (peer/data/app_key.pem, app_cert.pem,
+      # pairings/<peer_id>). Must outlive the container.
+      - ./peer:/peer
+    ports:
+      - "127.0.0.1:20558:20558"   # MDG operation interface (local only)
+    environment:
+      MDG_NAME: ${MDG_NAME:-dlre-bridge}
+      MDG_DATADIR: /peer/data
+      MDG_RESOURCEDIR: /peer/lua
+      MDG_LAN: "1"
+      MDG_MDNS: "0"
+      PEER_URL: http://127.0.0.1:20558
+      MQTT_HOST: ${MQTT_HOST:?set MQTT_HOST in .env}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USER: ${MQTT_USER:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      TOPIC_PREFIX: ${TOPIC_PREFIX:-danfoss-link}
+      POLL_SECONDS: ${POLL_SECONDS:-30}
+      CC_DEVICE_ID: ${CC_DEVICE_ID:-}
+    healthcheck:
+      # Healthy == peer attached to the grid (the bridge depends on that).
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:20558/status | grep -q '\"connected_to_mdg\":true'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s

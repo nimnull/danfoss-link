@@ -1,0 +1,16 @@
+FROM eclipse-temurin:21-jdk
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git unzip zip curl python3 python3-pip xxd file lua5.1 openssl \
+    && rm -rf /var/lib/apt/lists/*
+# jadx
+RUN curl -sSL -o /tmp/jadx.zip https://github.com/skylot/jadx/releases/download/v1.5.1/jadx-1.5.1.zip \
+    && mkdir -p /opt/jadx && unzip -q /tmp/jadx.zip -d /opt/jadx && rm /tmp/jadx.zip \
+    && ln -s /opt/jadx/bin/jadx /usr/local/bin/jadx && ln -s /opt/jadx/bin/jadx-gui /usr/local/bin/jadx-gui
+# unluac (build from source)
+RUN git clone --depth 1 https://github.com/HansWessels/unluac.git /opt/unluac \
+    && cd /opt/unluac && mkdir -p build \
+    && javac -nowarn -d build $(find . -name '*.java') \
+    && cd build && jar cfe /opt/unluac.jar unluac.Main . \
+    && printf '#!/bin/sh\nexec java -jar /opt/unluac.jar "$@"\n' > /usr/local/bin/unluac \
+    && chmod +x /usr/local/bin/unluac
+WORKDIR /w

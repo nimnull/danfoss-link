@@ -1,0 +1,27 @@
+# Danfoss Link CC bridge
+#
+# The vendor's Lua bytecode, certificates and keys stay local: only build inputs
+# and my own code are in this repository. Do not redistribute vendor files.
+
+# Secrets + device identity (generated locally; never commit)
+.env
+peer/data/
+*.pem
+*.key
+
+# Vendor material (regenerated locally from the APK; kept out of the repo)
+apk/
+out/
+peer/lua/
+work/extracted/
+work/lua/
+work/lua_std/
+work/unluac/
+*.apk
+*.luac
+
+# Backups, caches, build junk
+*.bak
+__pycache__/
+*.pyc
+luac.out

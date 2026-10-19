@@ -1,0 +1,100 @@
+# Heating vs Victron mains state - PAUSE-based.
+#
+# The mains-outage response is the CC's native house Pause (whole-house frost
+# protection); no setpoints are written, so they follow the CC schedule.
+#
+# Signals from the victron_gx integration:
+#   sensor.multiplus_ii_green_grid_lost_alarm
+#   sensor.multiplus_ii_yellow_grid_lost_alarm
+# "no_alarm" = mains present. Loss on EITHER line pauses; both lines back for
+# two minutes unpauses. "unavailable"/"unknown" is deliberately NOT treated as
+# loss (a GX runs on its own inverter and stays up through an outage, so a
+# missing state is a network/integration problem, not a power cut) and it also
+# blocks the restore.
+
+- id: heating_mains_lost_pause
+  alias: "Heating: mains lost -> pause"
+  description: >-
+    Either Victron line reports grid lost: pause the house so heating stops
+    draining the batteries. Setpoints are not touched.
+  mode: single
+  max_exceeded: silent
+  trigger:
+    - platform: state
+      entity_id:
+        - sensor.multiplus_ii_green_grid_lost_alarm
+        - sensor.multiplus_ii_yellow_grid_lost_alarm
+  condition:
+    - condition: template
+      value_template: >-
+        {% set g = states('sensor.multiplus_ii_green_grid_lost_alarm') %}
+        {% set y = states('sensor.multiplus_ii_yellow_grid_lost_alarm') %}
+        {{ g not in ['no_alarm', 'unavailable', 'unknown']
+           or y not in ['no_alarm', 'unavailable', 'unknown'] }}
+  action:
+    - service: switch.turn_on
+      target:
+        entity_id: switch.danfoss_link_cc_heating_pause
+    - service: persistent_notification.create
+      data:
+        notification_id: heating_pause_outage
+        title: "Heating: paused (mains lost)"
+        message: >-
+          Mains loss (green={{ states('sensor.multiplus_ii_green_grid_lost_alarm') }},
+          yellow={{ states('sensor.multiplus_ii_yellow_grid_lost_alarm') }}).
+          House paused until both lines report mains back.
+
+- id: heating_mains_restored_unpause
+  alias: "Heating: mains restored -> unpause (schedule resumes)"
+  description: >-
+    Both Victron lines report mains present for two minutes: unpause. The CC
+    schedule resumes with its own setpoints.
+  mode: single
+  max_exceeded: silent
+  trigger:
+    - platform: template
+      value_template: >-
+        {{ states('sensor.multiplus_ii_green_grid_lost_alarm') == 'no_alarm'
+           and states('sensor.multiplus_ii_yellow_grid_lost_alarm') == 'no_alarm' }}
+      for: "00:02:00"
+  action:
+    - service: switch.turn_off
+      target:
+        entity_id: switch.danfoss_link_cc_heating_pause
+    # Setpoint writes are rejected while Paused, so wait for the CC to actually
+    # exit Pause (bridge reflects + repolls) before restoring schedule setpoints.
+    - wait_template: "{{ is_state('switch.danfoss_link_cc_heating_pause', 'off') }}"
+      timeout: "00:00:30"
+    - delay: "00:00:08"
+    - service: script.turn_on
+      target:
+        entity_id: script.heating_restore_schedule_local
+    - service: persistent_notification.dismiss
+      data:
+        notification_id: heating_pause_outage
+
+- id: heating_pause_keepalive
+  alias: "Heating: hold pause while mains is out"
+  description: >-
+    Re-assert house Pause every 10 minutes and on HA start while either Victron
+    line reports grid lost, in case the CC drifts out of Pause during a long
+    outage or HA restarts mid-outage. Only ever turns pause ON; unpausing is
+    left to the debounced "mains restored" automation.
+  mode: single
+  max_exceeded: silent
+  trigger:
+    - platform: time_pattern
+      minutes: "/10"
+    - platform: homeassistant
+      event: start
+  condition:
+    - condition: template
+      value_template: >-
+        {% set g = states('sensor.multiplus_ii_green_grid_lost_alarm') %}
+        {% set y = states('sensor.multiplus_ii_yellow_grid_lost_alarm') %}
+        {{ g not in ['no_alarm', 'unavailable', 'unknown']
+           or y not in ['no_alarm', 'unavailable', 'unknown'] }}
+  action:
+    - service: switch.turn_on
+      target:
+        entity_id: switch.danfoss_link_cc_heating_pause

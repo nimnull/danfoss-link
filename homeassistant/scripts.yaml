@@ -1,0 +1,45 @@
+# Heating: restore scheduled setpoints, run by the "mains restored -> unpause"
+# automation after unpausing (the CC rejects setpoint writes while paused).
+# Local only: sets each room's HA climate target, which the bridge turns into
+# PATCH /api/rooms. It re-applies the setpoint the CC schedule holds at that
+# moment; it is not the frost mechanism (house Pause is), it only clears a frost
+# override left on a room so the room matches its schedule immediately on resume.
+#
+# The schedule below mirrors the CC's own schedule (sleep 18 C from 23:59 to
+# 06:30; at-home 06:30 to 23:59, with shower/bathroom at 22 C only inside their
+# 07:00-12:00 and 18:00-23:59 windows). Keep it in sync with the CC schedule.
+
+heating_restore_schedule_local:
+  alias: "Heating: restore scheduled setpoints (local)"
+  mode: single
+  max_exceeded: silent
+  sequence:
+    - repeat:
+        for_each:
+          - climate.peredpokii
+          - climate.dush
+          - climate.vanna
+          - climate.kabinet
+          - climate.kitchen
+          - climate.spalnia
+          - climate.ditiacha
+          - climate.living_room
+        sequence:
+          - variables:
+              target: >-
+                {% set m = now().hour * 60 + now().minute %}
+                {% set at_home = m >= 390 and m < 1439 %}
+                {% if repeat.item in ['climate.dush', 'climate.vanna'] %}
+                  {% if (m >= 420 and m < 720) or (m >= 1080 and m < 1439) %}22{% else %}18{% endif %}
+                {% elif repeat.item in ['climate.ditiacha', 'climate.spalnia'] %}
+                  {% if at_home %}22{% else %}18{% endif %}
+                {% else %}
+                  {% if at_home %}21{% else %}18{% endif %}
+                {% endif %}
+          - service: climate.set_temperature
+            target:
+              entity_id: "{{ repeat.item }}"
+            data:
+              temperature: "{{ target | float }}"
+          - delay:
+              seconds: 1

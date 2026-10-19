@@ -1,0 +1,47 @@
+FROM debian:13-slim
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      lua5.1 liblua5.1-0-dev luarocks build-essential git unzip curl perl \
+      openssl ca-certificates pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- TLS stack -------------------------------------------------------------
+# The MDG grid and the Danfoss CC present ECDSA certificates on
+# brainpoolP320r1, a curve that was never registered as a TLS group (RFC 7027
+# only covers 256/384/512). OpenSSL >= 1.1.0 therefore refuses the peer
+# signature algorithm in tls12_check_peer_sigalg ("wrong curve"), and OpenSSL 3
+# additionally rejects the explicit EC parameters these certs carry (error 94).
+# The vendor shipped OpenSSL 1.0.2, which performed neither check.
+#
+# So LuaSec gets its own OpenSSL 1.1.1w with that one TLS-1.2 group check
+# disabled. Everything else in the image keeps the distro OpenSSL 3.
+COPY build-openssl.sh /tmp/build-openssl.sh
+RUN sh /tmp/build-openssl.sh
+
+ENV LD_LIBRARY_PATH=/opt/ossl111/lib
+
+RUN luarocks --lua-version=5.1 install luasocket \
+ && luarocks --lua-version=5.1 install luasec \
+      OPENSSL_INCDIR=/opt/ossl111/include OPENSSL_LIBDIR=/opt/ossl111/lib \
+ && luarocks --lua-version=5.1 install struct \
+ && luarocks --lua-version=5.1 install luafilesystem \
+ && luarocks --lua-version=5.1 install lpeg \
+ && lua5.1 -e 'local s=require"ssl"; print("luasec", s._VERSION, s._COPYRIGHT:match("OpenSSL[^\\n]*") or "?")'
+
+# The vendor `pb` module is protoc-gen-lua's C helper; upstream has the same API.
+RUN git clone --depth 1 https://github.com/sean-lin/protoc-gen-lua /opt/protoc-gen-lua \
+ && cd /opt/protoc-gen-lua/protobuf \
+ && gcc -O2 -fPIC -shared -I/usr/include/lua5.1 pb.c -o /usr/local/lib/lua/5.1/pb.so \
+ && lua5.1 -e 'local pb=require"pb"; assert(pb.varint_encoder and pb.struct_pack and pb.zig_zag_encode32); print("pb ok")'
+
+# Replacements for Trifork's native crypto modules, against the patched 1.1.1.
+COPY dlrenative.c /tmp/dlrenative.c
+RUN gcc -O2 -fPIC -shared -I/usr/include/lua5.1 -I/opt/ossl111/include \
+      /tmp/dlrenative.c -o /usr/local/lib/lua/5.1/dlrenative.so \
+      -L/opt/ossl111/lib -lssl -lcrypto -Wl,-rpath,/opt/ossl111/lib \
+ && lua5.1 -e 'local n=require"dlrenative"; assert(n.lbn.number and n.ecgroup.new_GFp and n.crypto.hmac.digest); print("dlrenative ok")'
+
+WORKDIR /peer
+ENV LUA_PATH="/peer/shim/?.lua;/peer/lua/?.lua;;"
+ENV LUA_CPATH="/usr/local/lib/lua/5.1/?.so;/usr/lib/aarch64-linux-gnu/lua/5.1/?.so;/usr/lib/x86_64-linux-gnu/lua/5.1/?.so;;"
+CMD ["lua5.1", "/peer/main.lua"]

@@ -1,0 +1,14 @@
+# dlre-helper = the peer runtime (dlre-run) + the Python MQTT bridge.
+# Build the base first:
+#   docker build -t dlre-run -f work/Dockerfile.runtime work/
+FROM dlre-run
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-venv curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/br \
+    && /opt/br/bin/pip install --no-cache-dir paho-mqtt==2.1.0
+COPY bridge/mqtt_bridge.py /bridge/mqtt_bridge.py
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
