@@ -384,21 +384,3 @@ Compatibility gaps against current rocks, patched in `peer/shim/mdgcompat.lua`:
 | LPeg ≥ 1.0 exposes `version` as a string | wrapped back into a function |
 | `fileops.listdir` is an iterator, not a table | `peer/shim/fileops.lua` |
 | `osmisc.hires_time` and friends | `peer/shim/osmisc.lua` |
-
-## 11. Open questions
-
-Only the first real pairing against a CC can settle these:
-
-1. **`cert:pubkey()` return shape.** It feeds the PACE secret. LuaSec 1.3
-   returns `(pem, type, bits)` and Lua table constructors expand the last call,
-   so a multi-value return would silently add elements to `pi`. The vendor's
-   patched LuaSec may have returned only the PEM, or DER. First thing to vary if
-   pairing reports `invalid password`.
-2. **`crypto.digest(alg, data, "", false)` output encoding.** Implemented as hex
-   (LuaCrypto's convention for `raw = false`); raw bytes are the alternative.
-3. **Enum numbering** for `place_call_result`, `bye_reason`,
-   `allocate_pairing_channel_result`, `RoutingErrorTypes` and the
-   `*_message_tag` tables was not extracted; the vendor Lua handles them
-   symbolically, so this project never needs the numbers.
-4. The CC's LAN listener was never observed during development (nothing on
-   `14641` on the development network), so only the grid path is exercised.

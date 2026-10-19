@@ -163,6 +163,51 @@ connectivity diagnostic `binary_sensor`, and one `climate` entity per room
 - PACE pairing is cross-checked by `peer/selftest_pace.lua`, which runs the
   vendor client and server halves against each other.
 
+## Tooling
+
+Runtime (`work/Dockerfile.runtime`, `Dockerfile.helper`):
+
+- Docker + Docker Compose.
+- Lua 5.1 + LuaRocks: LuaSocket, LuaSec, `struct`, luafilesystem, lpeg.
+- OpenSSL **1.1.1w**, built from source with one TLS-1.2 check disabled
+  (`work/build-openssl.sh`; source: <https://github.com/openssl/openssl>, tag
+  `OpenSSL_1_1_1w`). Only LuaSec links against it; the rest uses distro OpenSSL 3.
+- `pb` from protoc-gen-lua.
+- Python 3 + `paho-mqtt` 2.1.0 (the bridge).
+
+Reverse-engineering / asset prep (`work/Dockerfile.tools`):
+
+- **jadx 1.5.1** — APK/dex decompiler.
+- **unluac** — Lua 5.1 decompiler (built from source).
+- `tools/luac204.py` converts Trifork "format 204" bytecode to standard Lua 5.1;
+  `tools/layout.sh` assembles `peer/lua`; `tools/pair.sh` pairs with the CC.
+
+Home Assistant side: Home Assistant + an MQTT broker (Mosquitto). Entities are
+created via MQTT discovery; no custom component.
+
+## Reproducing this, and prior work
+
+Rebuilding the peer needs the vendor assets, which are **not** in this repo (see
+Legal); get them from your own install:
+
+- The **Danfoss Link app** APK carries the Lua MDG stack (`luafiles/mdg-c.zip`),
+  the native lib and the CA cert. Unpack with `jadx`/`unzip`, convert the
+  bytecode with `tools/luac204.py`, lay it out with `tools/layout.sh`.
+- The peer identity and CC pairing are generated locally (see [Run it](#run-it)
+  and [Pairing](#pairing)).
+
+Built on prior work — credit to the authors:
+
+- **Trifork — Secure Device Grid ("MDG")**, the protocol this speaks, and its
+  reference SDK: <https://github.com/trifork/secure-device-grid>.
+- **Ole-JH — `ha-danfoss-link`**, a pure-Python MDG client used to cross-check
+  the protocol, the `cc_json`/REST surface and the colon-hex `peer_name`:
+  <https://github.com/Ole-JH/ha-danfoss-link>.
+- **sean-lin — protoc-gen-lua** (`pb`): <https://github.com/sean-lin/protoc-gen-lua>.
+- **skylot — jadx**: <https://github.com/skylot/jadx>.
+- **HansWessels — unluac**: <https://github.com/HansWessels/unluac>.
+- The **OpenSSL**, **LuaSec** and **LuaSocket** projects.
+
 ## Legal
 
 Personal interoperability work on hardware I own. The vendor's Lua bytecode,
