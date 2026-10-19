@@ -6,8 +6,8 @@ pause and resume heating over MQTT. No Android emulator, no UI automation, no
 vendor binaries at runtime.
 
 Status: **live.** The peer is paired with the CC and the full path works; Home
-Assistant pauses/resumes heating and controls per-room setpoints. The peer and
-the bridge run as one container (`dlre-helper`).
+Assistant pauses/resumes heating, sets house Vacation mode, and controls
+per-room setpoints. The peer and the bridge run as one container (`dlre-helper`).
 
 ```
 Home Assistant ──MQTT──► bridge (Python) ──HTTP──► peer (Lua + MDG stack)
@@ -147,10 +147,11 @@ curl -s 'localhost:20558/cc-pause?state=Active'     # pause heating
 curl -s 'localhost:20558/cc-pause?state=Inactive'   # resume
 ```
 
-Home Assistant gets, via MQTT discovery: a `switch` for house pause, a
-connectivity diagnostic `binary_sensor`, and one `climate` entity per room
-(current temperature + writable setpoint). Raw payloads are also published on
-`danfoss-link/modes` and `danfoss-link/rooms`.
+Home Assistant gets, via MQTT discovery: `switch` entities for house pause and
+Vacation mode, a `number` for the vacation temperature, a connectivity
+diagnostic `binary_sensor`, one `climate` entity per room (current temperature +
+writable setpoint), and a `switch` per CC on/off device. Raw payloads are also
+published on `danfoss-link/modes` and `danfoss-link/rooms`.
 
 ## Notes
 

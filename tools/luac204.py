@@ -11,6 +11,7 @@ Usage: luac204.py <in.luac> <out.luac>
 import os
 import struct
 import sys
+from pathlib import Path
 
 
 # target sizeof(size_t): stock Lua 5.1 refuses chunks that disagree with the
@@ -94,16 +95,17 @@ def function(r, w):
     for _ in range(n):
         t = r.byte()
         w.byte(t)
-        if t == 0:               # nil
-            pass
-        elif t == 1:             # boolean
-            w.byte(r.byte())
-        elif t == 3:             # number
-            w.raw(r.take(8))
-        elif t == 4:             # string
-            string(r, w)
-        else:
-            raise ValueError(f"bad constant type {t} at {r.i}")
+        match t:
+            case 0:              # nil
+                pass
+            case 1:              # boolean
+                w.byte(r.byte())
+            case 3:              # number
+                w.raw(r.take(8))
+            case 4:              # string
+                string(r, w)
+            case _:
+                raise ValueError(f"bad constant type {t} at {r.i}")
 
     n = r.varint()               # nested prototypes
     w.int(n)
@@ -148,4 +150,4 @@ def convert(data):
 if __name__ == "__main__":
     src, dst = sys.argv[1], sys.argv[2]
     CHUNK_NAME = sys.argv[3] if len(sys.argv) > 3 else os.path.basename(src).replace(".luac", ".lua")
-    open(dst, "wb").write(convert(open(src, "rb").read()))
+    Path(dst).write_bytes(convert(Path(src).read_bytes()))

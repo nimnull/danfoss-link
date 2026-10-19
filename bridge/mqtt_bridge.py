@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """MQTT bridge between Home Assistant and the Danfoss Link CC.
 
-The MDG peer (Lua, container `peer`) owns the grid connection and exposes the
-CC's REST API over its local HTTP operation interface. This process is the
-Home-Assistant-facing half: it publishes discovery, mirrors the CC's house
-mode, and turns switch commands into `PUT /api/modes/pause`.
+The MDG peer (Lua) owns the grid connection and exposes the CC's REST API over
+its local HTTP operation interface. This process is the Home-Assistant-facing
+half: it publishes discovery and mirrors CC state, and turns HA commands into
+CC REST writes -- house pause and vacation modes, per-room setpoints, the
+vacation temperature, and on/off devices.
 
 Pausing is a house mode on the CC:
     PUT /api/modes/pause {"type":"Pause","state":"Active"}    -> heating paused
@@ -17,7 +18,6 @@ import logging
 import os
 import signal
 import threading
-import time
 import urllib.parse
 import urllib.request
 
@@ -45,6 +45,11 @@ T_MODES = f"{PREFIX}/modes"
 T_ROOMS = f"{PREFIX}/rooms"
 T_GRID = f"{PREFIX}/grid/state"
 T_ROOM = f"{PREFIX}/room"
+T_VAC_STATE = f"{PREFIX}/vacation/state"
+T_VAC_SET = f"{PREFIX}/vacation/set"
+T_VACTEMP_STATE = f"{PREFIX}/vacation_temp/state"
+T_VACTEMP_SET = f"{PREFIX}/vacation_temp/set"
+T_ONOFF = f"{PREFIX}/onoff"
 
 DEVICE_INFO = {
     "identifiers": ["danfoss_link_cc_bridge"],
@@ -83,7 +88,7 @@ def peer_op(operation: str, **params) -> dict:
         raise PeerError(f"{operation}: non-JSON reply {body[:120]!r}") from exc
 
 
-def cc_request(method: str, uri: str, content: dict | None = None) -> dict:
+def cc_request(method: str, uri: str, content: dict | None = None) -> dict | None:
     params = {"method": method, "uri": uri}
     if content is not None:
         # Compact separators: spaces would urlencode to '+', which the peer's
@@ -97,11 +102,11 @@ def cc_request(method: str, uri: str, content: dict | None = None) -> dict:
     return result.get("payload")
 
 
-def pause_is_active(modes) -> bool | None:
-    """Read the Pause mode out of a GET /api/modes payload.
+def mode_active(modes, mode_type: str) -> bool | None:
+    """Whether the named house mode (Pause, Vacation, ...) is Active.
 
-    The payload is {"status":.., "content":[{"type","state"}..]}; unwrap the
-    content list before scanning for the Pause mode.
+    `modes` is a GET /api/modes payload {"status":.., "content":[{"type","state"}..]};
+    the content list is unwrapped before scanning. Returns None if unreadable.
     """
     if isinstance(modes, dict) and isinstance(modes.get("content"), list):
         modes = modes["content"]
@@ -110,7 +115,7 @@ def pause_is_active(modes) -> bool | None:
     if not isinstance(modes, list):
         return None
     for mode in modes:
-        if isinstance(mode, dict) and str(mode.get("type", "")).lower() == "pause":
+        if isinstance(mode, dict) and str(mode.get("type", "")).lower() == mode_type.lower():
             return str(mode.get("state", "")).lower() == "active"
     return False
 
@@ -139,6 +144,31 @@ def publish_discovery(client: mqtt.Client) -> None:
             "availability_topic": T_AVAILABILITY,
             "device": DEVICE_INFO,
         },
+        f"{DISCOVERY_PREFIX}/switch/danfoss_link/vacation/config": {
+            "name": "Vacation",
+            "unique_id": "danfoss_link_cc_vacation",
+            "command_topic": T_VAC_SET,
+            "state_topic": T_VAC_STATE,
+            "payload_on": "ON",
+            "payload_off": "OFF",
+            "icon": "mdi:palm-tree",
+            "availability_topic": T_AVAILABILITY,
+            "device": DEVICE_INFO,
+        },
+        f"{DISCOVERY_PREFIX}/number/danfoss_link/vacation_temp/config": {
+            "name": "Vacation temperature",
+            "unique_id": "danfoss_link_cc_vacation_temp",
+            "command_topic": T_VACTEMP_SET,
+            "state_topic": T_VACTEMP_STATE,
+            "min": 5,
+            "max": 35,
+            "step": 0.5,
+            "unit_of_measurement": "°C",
+            "device_class": "temperature",
+            "mode": "box",
+            "availability_topic": T_AVAILABILITY,
+            "device": DEVICE_INFO,
+        },
     }
     for topic, payload in entities.items():
         client.publish(topic, json.dumps(payload), qos=1, retain=True)
@@ -146,6 +176,7 @@ def publish_discovery(client: mqtt.Client) -> None:
 
 
 _rooms_announced: set = set()
+_onoff_announced: set = set()
 
 
 def publish_room_discovery(client: mqtt.Client, room: dict) -> None:
@@ -212,6 +243,38 @@ def publish_rooms(client: mqtt.Client, rooms_payload) -> None:
         client.publish(f"{T_ROOM}/{rid}/mode", "heat", qos=0, retain=True)
 
 
+def publish_onoff(client: mqtt.Client, devices) -> None:
+    """Publish an HA switch per CC on/off device from a GET /api/onoffdevices
+    payload, and each device's current state ("On"/"Off"). Content is a list of
+    {"id","name","state"} and is empty when the CC has no on/off devices."""
+    content = devices.get("content") if isinstance(devices, dict) else None
+    if not isinstance(content, list):
+        return
+    for dev in content:
+        if not isinstance(dev, dict):
+            continue
+        did = dev.get("id")
+        if did is None:
+            continue
+        if did not in _onoff_announced:
+            client.publish(
+                f"{DISCOVERY_PREFIX}/switch/danfoss_link/onoff{did}/config",
+                json.dumps({
+                    "name": dev.get("name") or f"On/off {did}",
+                    "unique_id": f"danfoss_link_onoff_{did}",
+                    "command_topic": f"{T_ONOFF}/{did}/set",
+                    "state_topic": f"{T_ONOFF}/{did}/state",
+                    "payload_on": "On",
+                    "payload_off": "Off",
+                    "availability_topic": T_AVAILABILITY,
+                    "device": DEVICE_INFO,
+                }), qos=1, retain=True)
+            _onoff_announced.add(did)
+        state = dev.get("state")
+        if state is not None:
+            client.publish(f"{T_ONOFF}/{did}/state", str(state), qos=0, retain=True)
+
+
 def poll_once(client: mqtt.Client) -> None:
     status = {}
     try:
@@ -241,9 +304,12 @@ def poll_once(client: mqtt.Client) -> None:
 
     client.publish(T_AVAILABILITY, "online", qos=1, retain=True)
     client.publish(T_MODES, json.dumps(modes), qos=0, retain=True)
-    paused = pause_is_active(modes)
+    paused = mode_active(modes, "Pause")
     if paused is not None:
         client.publish(T_PAUSE_STATE, "ON" if paused else "OFF", qos=1, retain=True)
+    vacation = mode_active(modes, "Vacation")
+    if vacation is not None:
+        client.publish(T_VAC_STATE, "ON" if vacation else "OFF", qos=1, retain=True)
 
     try:
         rooms = cc_request("GET", "/api/rooms")
@@ -252,13 +318,32 @@ def poll_once(client: mqtt.Client) -> None:
     except PeerError as exc:
         LOG.debug("GET /api/rooms failed: %s", exc)
 
+    try:
+        settings = cc_request("GET", "/api/settings/temperature")
+        content = settings.get("content") if isinstance(settings, dict) else None
+        vac = content.get("vacationTemperature") if isinstance(content, dict) else None
+        sp = vac.get("setpoint") if isinstance(vac, dict) else None
+        if sp is not None:
+            client.publish(T_VACTEMP_STATE, json.dumps(sp), qos=1, retain=True)
+    except PeerError as exc:
+        LOG.debug("GET /api/settings/temperature failed: %s", exc)
+
+    try:
+        publish_onoff(client, cc_request("GET", "/api/onoffdevices"))
+    except PeerError as exc:
+        LOG.debug("GET /api/onoffdevices failed: %s", exc)
+
 
 def on_connect(client: mqtt.Client, userdata, flags, reason_code, properties=None):
     LOG.info("connected to MQTT (%s)", reason_code)
     client.subscribe(T_PAUSE_SET, qos=1)
+    client.subscribe(T_VAC_SET, qos=1)
+    client.subscribe(T_VACTEMP_SET, qos=1)
     client.subscribe(f"{T_ROOM}/+/setpoint/set", qos=1)
+    client.subscribe(f"{T_ONOFF}/+/set", qos=1)
     publish_discovery(client)
     _rooms_announced.clear()
+    _onoff_announced.clear()
 
 
 def _handle_pause(client: mqtt.Client, payload: str) -> None:
@@ -300,13 +385,79 @@ def _handle_setpoint(client: mqtt.Client, topic: str, payload: str) -> None:
     threading.Timer(3.0, poll_once, args=(client,)).start()
 
 
+def _handle_vacation(client: mqtt.Client, payload: str) -> None:
+    if payload not in ("ON", "OFF"):
+        LOG.warning("ignoring vacation command %r", payload)
+        return
+    state = "Active" if payload == "ON" else "Inactive"
+    LOG.info("setting house mode Vacation -> %s", state)
+    try:
+        cc_request("PUT", "/api/modes/vacation", {"type": "Vacation", "state": state})
+    except PeerError as exc:
+        LOG.error("vacation command failed: %s", exc)
+        return
+    client.publish(T_VAC_STATE, payload, qos=1, retain=True)
+    threading.Timer(3.0, poll_once, args=(client,)).start()
+
+
+def _handle_vacation_temp(client: mqtt.Client, payload: str) -> None:
+    try:
+        value = round(float(payload) * 2) / 2  # snap to the 0.5 step
+    except ValueError:
+        LOG.warning("bad vacation temperature %r", payload)
+        return
+    LOG.info("set vacation temperature -> %s", value)
+    try:
+        cc_request("PATCH", "/api/settings/temperature",
+                   {"vacationTemperature": {"setpoint": value}})
+    except PeerError as exc:
+        LOG.error("vacation temperature write failed: %s", exc)
+        return
+    client.publish(T_VACTEMP_STATE, json.dumps(value), qos=1, retain=True)
+    threading.Timer(3.0, poll_once, args=(client,)).start()
+
+
+def _handle_onoff(client: mqtt.Client, topic: str, payload: str) -> None:
+    # topic: <PREFIX>/onoff/<id>/set -> PATCH /api/onoffdevices/<id>. The CC's
+    # id type is unconfirmed (no on/off devices present to observe), so a numeric
+    # id is sent as int and anything else verbatim.
+    if payload not in ("On", "Off"):
+        LOG.warning("ignoring on/off command %r on %s", payload, topic)
+        return
+    try:
+        did_str = topic.split("/")[-2]
+    except IndexError:
+        LOG.warning("bad on/off topic %s", topic)
+        return
+    did = int(did_str) if did_str.lstrip("-").isdigit() else did_str
+    LOG.info("set on/off device %s -> %s", did, payload)
+    try:
+        cc_request("PATCH", f"/api/onoffdevices/{did}", {"id": did, "state": payload})
+    except PeerError as exc:
+        LOG.error("on/off write failed (device %s): %s", did, exc)
+        return
+    client.publish(f"{T_ONOFF}/{did}/state", payload, qos=0, retain=True)
+    threading.Timer(3.0, poll_once, args=(client,)).start()
+
+
 def on_message(client: mqtt.Client, userdata, message: mqtt.MQTTMessage):
     topic = message.topic
     raw = message.payload.decode("utf-8", "replace").strip()
-    if topic == T_PAUSE_SET:
-        _handle_pause(client, raw.upper())
-    elif topic.startswith(f"{T_ROOM}/") and topic.endswith("/setpoint/set"):
-        _handle_setpoint(client, topic, raw)
+    if not topic.startswith(f"{PREFIX}/"):
+        return
+    # Match on the path segments after the prefix: "<kind>[/<id>]/set".
+    # PREFIX may itself contain "/", so strip it before splitting.
+    match topic.removeprefix(f"{PREFIX}/").split("/"):
+        case ["pause", "set"]:
+            _handle_pause(client, raw.upper())
+        case ["vacation", "set"]:
+            _handle_vacation(client, raw.upper())
+        case ["vacation_temp", "set"]:
+            _handle_vacation_temp(client, raw)
+        case ["room", _, "setpoint", "set"]:
+            _handle_setpoint(client, topic, raw)
+        case ["onoff", _, "set"]:
+            _handle_onoff(client, topic, raw)
 
 
 def main() -> None:
