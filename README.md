@@ -210,6 +210,10 @@ Built on prior work — credit to the authors:
 
 ## Legal
 
+This repository's own code is under the MIT License ([`LICENSE`](LICENSE)). That
+covers only the original code here (bridge, shims, tools, build scripts, docs);
+it grants no rights to Danfoss/Trifork material (the MDG protocol, the vendor Lua
+bytecode, certificates or keys), which is proprietary and is not distributed here.
+
 Personal interoperability work on hardware I own. The vendor's Lua bytecode,
-certificates and keys stay local: only build inputs and my own code are in this
-repository. Don't redistribute the extracted vendor files.
+certificates and keys stay local. Don't redistribute the extracted vendor files.
